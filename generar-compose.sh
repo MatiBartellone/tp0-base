@@ -39,6 +39,11 @@ for ((i=1; i<=CLIENT_COUNT; i++)); do
     entrypoint: /client
     environment:
       - CLI_ID=$i
+      - NOMBRE=${NOMBRE:-Nombre$i}
+      - APELLIDO=${APELLIDO:-Apellido$i}
+      - DOCUMENTO=${DOCUMENTO:-3000000$i}
+      - NACIMIENTO=${NACIMIENTO:-1999-03-17}
+      - NUMERO=${NUMERO:-7574}
     volumes:
       - ./client/config.yaml:/config.yaml
     networks:

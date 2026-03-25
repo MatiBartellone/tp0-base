@@ -1,8 +1,6 @@
 package common
 
 import (
-	"bufio"
-	"fmt"
 	"net"
 	"os"
 	"os/signal"
@@ -14,18 +12,10 @@ import (
 
 var log = logging.MustGetLogger("log")
 
-// ClientConfig Configuration used by the client
-type ClientConfig struct {
-	ID            string
-	ServerAddress string
-	LoopAmount    int
-	LoopPeriod    time.Duration
-}
-
 // Client Entity that encapsulates how
 type Client struct {
 	config       ClientConfig
-	conn         net.Conn
+	protocol     *ClientProtocol
 	shutdownChan chan struct{}
 }
 
@@ -51,14 +41,13 @@ func (c *Client) Stop() {
 }
 
 func (c *Client) closeConn() {
-	if c.conn != nil {
-		_ = c.conn.Close()
-		c.conn = nil
+	if c.protocol != nil {
+		c.protocol.Close()
+		c.protocol = nil
 	}
 }
 
-// CreateClientSocket Initializes client socket. In case of
-// failure, error is logged and returned
+// createClientSocket initializes client socket and protocol.
 func (c *Client) createClientSocket() error {
 	conn, err := net.Dial("tcp", c.config.ServerAddress)
 	if err != nil {
@@ -69,7 +58,7 @@ func (c *Client) createClientSocket() error {
 		)
 		return err
 	}
-	c.conn = conn
+	c.protocol = NewClientProtocol(conn)
 	return nil
 }
 
@@ -84,60 +73,93 @@ func (c *Client) registerSignalHandler() {
 	}()
 }
 
+func (c *Client) isShuttingDown() bool {
+	select {
+	case <-c.shutdownChan:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Client) initBet() (Bet, bool) {
+	bet, err := NewBet(c.config)
+	if err != nil {
+		logBetSendFailure(c.config.ID, err)
+		return Bet{}, false
+	}
+
+	return bet, true
+}
+
+func (c *Client) sendBet(bet Bet) (bool, error, error) {
+	if err := c.createClientSocket(); err != nil {
+		return false, err, nil
+	}
+
+	if err := c.protocol.Send(bet.Serialize()); err != nil {
+		c.closeConn()
+		return false, err, nil
+	}
+
+	ok, ackErr := c.protocol.ReadAck()
+	c.closeConn()
+	return ok, nil, ackErr
+}
+
+func (c *Client) handleSendResult(bet Bet, ok bool, ackErr error) bool {
+	if ackErr != nil {
+		if c.isShuttingDown() {
+			return false
+		}
+		logAckReadFailure(c.config.ID, ackErr)
+		return false
+	}
+
+	if !ok {
+		logAckRejected(c.config.ID, ok)
+		return false
+	}
+
+	bet.LogSentSuccess(log)
+	return true
+}
+
+func (c *Client) waitNextIteration() bool {
+	select {
+	case <-time.After(c.config.LoopPeriod):
+		return true
+	case <-c.shutdownChan:
+		return false
+	}
+}
+
 // StartClientLoop Send messages to the client until some time threshold is met
 func (c *Client) StartClientLoop() {
 	c.registerSignalHandler()
+	bet, ok := c.initBet()
+	if !ok {
+		return
+	}
 
-	// There is an autoincremental msgID to identify every message sent
-	// Messages if the message amount threshold has not been surpassed
-	for msgID := 1; msgID <= c.config.LoopAmount; msgID++ {
-		select {
-		case <-c.shutdownChan:
-			return
-		default:
-		}
-
-		// Create the connection the server in every loop iteration. Send an
-		if err := c.createClientSocket(); err != nil {
+	for i := 0; i < c.config.LoopAmount; i++ {
+		if c.isShuttingDown() {
 			return
 		}
 
-		// TODO: Modify the send to avoid short-write
-		fmt.Fprintf(
-			c.conn,
-			"[CLIENT %v] Message N°%v\n",
-			c.config.ID,
-			msgID,
-		)
-		msg, err := bufio.NewReader(c.conn).ReadString('\n')
-		c.closeConn()
-
-		if err != nil {
-			select {
-			case <-c.shutdownChan:
-				return
-			default:
-			}
-
-			log.Errorf("action: receive_message | result: fail | client_id: %v | error: %v",
-				c.config.ID,
-				err,
-			)
+		ackOK, sendErr, ackErr := c.sendBet(bet)
+		if sendErr != nil {
+			logBetSendFailure(c.config.ID, sendErr)
 			return
 		}
 
-		log.Infof("action: receive_message | result: success | client_id: %v | msg: %v",
-			c.config.ID,
-			msg,
-		)
-
-		// Wait a time between sending one message and the next one
-		select {
-		case <-time.After(c.config.LoopPeriod):
-		case <-c.shutdownChan:
+		if !c.handleSendResult(bet, ackOK, ackErr) {
 			return
 		}
 
+		if !c.waitNextIteration() {
+			return
+		}
 	}
 	log.Infof("action: loop_finished | result: success | client_id: %v", c.config.ID)
 }

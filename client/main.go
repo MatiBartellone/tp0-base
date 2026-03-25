@@ -102,12 +102,18 @@ func main() {
 
 	// Print program config with debugging purposes
 	PrintConfig(v)
+	betInput, err := common.LoadBetInputFromEnv()
+	if err != nil {
+		log.Criticalf("%s", err)
+		return
+	}
 
 	clientConfig := common.ClientConfig{
 		ServerAddress: v.GetString("server.address"),
 		ID:            v.GetString("id"),
 		LoopAmount:    v.GetInt("loop.amount"),
 		LoopPeriod:    v.GetDuration("loop.period"),
+		BetInput:      betInput,
 	}
 
 	client := common.NewClient(clientConfig)
