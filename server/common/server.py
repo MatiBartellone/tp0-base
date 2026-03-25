@@ -5,6 +5,8 @@ import signal
 from .utils import store_bets
 from .protocol import ServerProtocol
 
+FAIL_BATCH_COUNT = 0
+
 
 class Server:
     def __init__(self, port, listen_backlog):
@@ -52,20 +54,33 @@ class Server:
         If a problem arises in the communication with the client, the
         client socket will also be closed
         """
+        protocol = ServerProtocol(client_sock)
         try:
-            protocol = ServerProtocol(client_sock)
-            bet = protocol.recv_bet()
+            while self._running:
+                try:
+                    bets = protocol.recv_batch()
+                except EOFError:
+                    break
+                except (OSError, ValueError, ConnectionError) as e:
+                    if self._running:
+                        logging.error(f'action: apuesta_recibida | result: fail | cantidad: {FAIL_BATCH_COUNT} | error: {e}')
+                    try:
+                        protocol.send_ack(False)
+                    except OSError:
+                        pass
+                    break
 
-            store_bets([bet])
-            logging.info(f"action: apuesta_almacenada | result: success | dni: {bet.document} | numero: {bet.number}")
-            protocol.send_ack(True)
-        except (OSError, ValueError, ConnectionError) as e:
-            if self._running:
-                logging.error(f'action: apuesta_almacenada | result: fail | error: {e}')
-            try:
-                ServerProtocol(client_sock).send_ack(False)
-            except OSError:
-                pass
+                try:
+                    store_bets(bets)
+                    logging.info(f"action: apuesta_recibida | result: success | cantidad: {len(bets)}")
+                    protocol.send_ack(True)
+                except (OSError, ValueError) as e:
+                    logging.error(f'action: apuesta_recibida | result: fail | cantidad: {len(bets)} | error: {e}')
+                    try:
+                        protocol.send_ack(False)
+                    except OSError:
+                        pass
+                    break
         finally:
             try:
                 client_sock.close()

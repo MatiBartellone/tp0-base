@@ -5,6 +5,12 @@ import (
 	"net"
 )
 
+const (
+	ackByteSize = 1
+	ackSuccessCode = 1
+	ackIndex = 0
+)
+
 type ClientProtocol struct {
 	conn net.Conn
 }
@@ -25,12 +31,20 @@ func (p *ClientProtocol) Send(payload []byte) error {
 	return nil
 }
 
+func (p *ClientProtocol) SendBatch(payload []byte) error {
+	return p.Send(payload)
+}
+
 func (p *ClientProtocol) ReadAck() (bool, error) {
-	ack := make([]byte, 1)
+	ack := make([]byte, ackByteSize)
 	if _, err := io.ReadFull(p.conn, ack); err != nil {
 		return false, err
 	}
-	return ack[0] == 1, nil
+	return ack[ackIndex] == ackSuccessCode, nil
+}
+
+func (p *ClientProtocol) ReadBatchAck() (bool, error) {
+	return p.ReadAck()
 }
 
 func (p *ClientProtocol) Close() {

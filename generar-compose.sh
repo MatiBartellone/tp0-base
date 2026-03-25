@@ -46,6 +46,7 @@ for ((i=1; i<=CLIENT_COUNT; i++)); do
       - NUMERO=${NUMERO:-7574}
     volumes:
       - ./client/config.yaml:/config.yaml
+      - ./.data:/.data
     networks:
       - testing_net
     depends_on:

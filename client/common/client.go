@@ -1,16 +1,19 @@
 package common
 
 import (
+	"io"
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
-	"time"
 
 	"github.com/op/go-logging"
 )
 
 var log = logging.MustGetLogger("log")
+
+const signalChannelBufferSize = 1
 
 // Client Entity that encapsulates how
 type Client struct {
@@ -63,7 +66,7 @@ func (c *Client) createClientSocket() error {
 }
 
 func (c *Client) registerSignalHandler() {
-	sigChan := make(chan os.Signal, 1)
+	sigChan := make(chan os.Signal, signalChannelBufferSize)
 	signal.Notify(sigChan, syscall.SIGTERM)
 
 	go func() {
@@ -82,32 +85,7 @@ func (c *Client) isShuttingDown() bool {
 	}
 }
 
-func (c *Client) initBet() (Bet, bool) {
-	bet, err := NewBet(c.config)
-	if err != nil {
-		logBetSendFailure(c.config.ID, err)
-		return Bet{}, false
-	}
-
-	return bet, true
-}
-
-func (c *Client) sendBet(bet Bet) (bool, error, error) {
-	if err := c.createClientSocket(); err != nil {
-		return false, err, nil
-	}
-
-	if err := c.protocol.Send(bet.Serialize()); err != nil {
-		c.closeConn()
-		return false, err, nil
-	}
-
-	ok, ackErr := c.protocol.ReadAck()
-	c.closeConn()
-	return ok, nil, ackErr
-}
-
-func (c *Client) handleSendResult(bet Bet, ok bool, ackErr error) bool {
+func (c *Client) handleSendResult(ok bool, ackErr error) bool {
 	if ackErr != nil {
 		if c.isShuttingDown() {
 			return false
@@ -120,46 +98,103 @@ func (c *Client) handleSendResult(bet Bet, ok bool, ackErr error) bool {
 		logAckRejected(c.config.ID, ok)
 		return false
 	}
-
-	bet.LogSentSuccess(log)
 	return true
 }
 
-func (c *Client) waitNextIteration() bool {
-	select {
-	case <-time.After(c.config.LoopPeriod):
-		return true
-	case <-c.shutdownChan:
+func (c *Client) sendBatch(batchPayload []byte) (bool, error, error) {
+	if err := c.protocol.SendBatch(batchPayload); err != nil {
+		return false, err, nil
+	}
+
+	ok, ackErr := c.protocol.ReadBatchAck()
+	return ok, nil, ackErr
+}
+
+func (c *Client) sendBuiltBatch(builder *BatchBuilder) bool {
+	payload, _, err := builder.Build()
+	if err != nil {
+		logBetSendFailure(c.config.ID, err)
 		return false
 	}
+
+	ok, sendErr, ackErr := c.sendBatch(payload)
+	if sendErr != nil {
+		logBetSendFailure(c.config.ID, sendErr)
+		return false
+	}
+
+	if !c.handleSendResult(ok, ackErr) {
+		return false
+	}
+
+	builder.Reset()
+	return true
 }
 
 // StartClientLoop Send messages to the client until some time threshold is met
 func (c *Client) StartClientLoop() {
 	c.registerSignalHandler()
-	bet, ok := c.initBet()
-	if !ok {
+
+	if err := c.createClientSocket(); err != nil {
+		return
+	}
+	defer c.closeConn()
+
+	agencyID, err := strconv.Atoi(c.config.ID)
+	if err != nil {
+		logBetSendFailure(c.config.ID, err)
 		return
 	}
 
-	for i := 0; i < c.config.LoopAmount; i++ {
+	file, err := openAgencyDataset(c.config.ID)
+	if err != nil {
+		logBetSendFailure(c.config.ID, err)
+		return
+	}
+	defer file.Close()
+
+	reader := newDatasetReader(file)
+	builder := NewBatchBuilder(uint8(agencyID), c.config.BatchMaxAmount)
+
+	for {
 		if c.isShuttingDown() {
 			return
 		}
 
-		ackOK, sendErr, ackErr := c.sendBet(bet)
-		if sendErr != nil {
-			logBetSendFailure(c.config.ID, sendErr)
+		record, readErr := reader.Read()
+		if readErr == io.EOF {
+			if !builder.IsEmpty() && !c.sendBuiltBatch(builder) {
+				return
+			}
+			break
+		}
+		if readErr != nil {
+			logBetSendFailure(c.config.ID, readErr)
 			return
 		}
 
-		if !c.handleSendResult(bet, ackOK, ackErr) {
+		bet, betErr := NewBetFromRecord(record)
+		if betErr != nil {
+			logBetSendFailure(c.config.ID, betErr)
 			return
 		}
 
-		if !c.waitNextIteration() {
+		if builder.Add(bet) {
+			continue
+		}
+
+		if !c.sendBuiltBatch(builder) {
 			return
 		}
+
+		if !builder.Add(bet) {
+			logBetSendFailure(c.config.ID, io.ErrShortBuffer)
+			return
+		}
+	}
+
+	if c.isShuttingDown() {
+		return
 	}
 	log.Infof("action: loop_finished | result: success | client_id: %v", c.config.ID)
 }
