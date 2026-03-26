@@ -61,7 +61,7 @@ func (c *Client) waitWinnersResult(agencyID uint8) error {
 			return fmt.Errorf("unexpected winners status: %d", status)
 		}
 
-		log.Infof("action: consulta_ganadores | result: success | cant_ganadores: %v", winnersCount)
+		logWinnersQuerySuccess(winnersCount)
 		return nil
 	}
 }

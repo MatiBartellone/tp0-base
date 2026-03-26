@@ -38,7 +38,7 @@ func (c *Client) Stop() {
 	default:
 		close(c.shutdownChan)
 		c.closeConn()
-		log.Infof("action: shutdown | result: success | client_id: %v", c.config.ID)
+		logClientShutdownSuccess(c.config.ID)
 	}
 }
 
@@ -65,7 +65,7 @@ func (c *Client) registerSignalHandler() {
 
 	go func() {
 		<-sigChan
-		log.Infof("action: shutdown | result: in_progress | client_id: %v", c.config.ID)
+		logClientShutdownInProgress(c.config.ID)
 		c.Stop()
 	}()
 }
@@ -106,7 +106,7 @@ func (c *Client) StartClientLoop() {
 			return
 		}
 
-		log.Infof("action: loop_finished | result: success | client_id: %v", c.config.ID)
+		logClientLoopSuccess(c.config.ID)
 	}()
 
 	c.registerSignalHandler()

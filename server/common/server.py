@@ -1,5 +1,4 @@
 import socket
-import logging
 import signal
 import threading
 
@@ -12,6 +11,16 @@ from .protocol import (
     TYPE_FINISH,
     TYPE_WINNERS_QUERY,
     ACK_SUCCESS,
+)
+from .server_logs import (
+    log_server_shutdown_in_progress,
+    log_server_shutdown_success,
+    log_server_shutdown_failure,
+    log_accept_connections_in_progress,
+    log_accept_connections_success,
+    log_bet_received_success,
+    log_bet_received_failure,
+    log_draw_success,
 )
 
 FAIL_BATCH_COUNT = 0
@@ -41,12 +50,12 @@ class Server:
             return
 
         self._running = False
-        logging.info('action: shutdown | result: in_progress | resource: server_socket')
+        log_server_shutdown_in_progress()
         try:
             self._server_socket.close()
-            logging.info('action: shutdown | result: success | resource: server_socket')
+            log_server_shutdown_success()
         except OSError as e:
-            logging.error(f'action: shutdown | result: fail | resource: server_socket | error: {e}')
+            log_server_shutdown_failure(e)
 
         self.__join_client_threads()
 
@@ -105,32 +114,35 @@ class Server:
                     break
                 except (OSError, ValueError, ConnectionError) as e:
                     if self._running:
-                        logging.error(f'action: apuesta_recibida | result: fail | cantidad: {FAIL_BATCH_COUNT} | error: {e}')
-                    try:
-                        protocol.send_ack(False)
-                    except OSError:
-                        pass
+                        log_bet_received_failure(FAIL_BATCH_COUNT, e)
+                    self.__send_failure_ack(protocol)
                     break
 
                 if msg_type == TYPE_BATCH:
-                    if not self.__handle_batch_message(protocol):
-                        break
-                    continue
+                    err = self.__handle_batch_message(protocol)
+                    if err is None:
+                        continue
+
+                    log_bet_received_failure(FAIL_BATCH_COUNT, err)
+                    self.__send_failure_ack(protocol)
+                    break
 
                 if msg_type == TYPE_FINISH:
-                    if not self.__handle_finish_message(protocol):
-                        break
-                    continue
+                    err = self.__handle_finish_message(protocol)
+                    if err is None:
+                        continue
+
+                    self.__send_failure_ack(protocol)
+                    break
 
                 if msg_type == TYPE_WINNERS_QUERY:
-                    if not self.__handle_winners_query(protocol):
-                        break
-                    continue
+                    err = self.__handle_winners_query(protocol)
+                    if err is None:
+                        continue
 
-                try:
-                    protocol.send_ack(False)
-                except OSError:
-                    pass
+                    break
+
+                self.__send_failure_ack(protocol)
                 break
         finally:
             try:
@@ -138,22 +150,23 @@ class Server:
             except OSError:
                 pass
 
+    def __send_failure_ack(self, protocol):
+        try:
+            protocol.send_ack(False)
+        except OSError:
+            pass
+
     def __handle_batch_message(self, protocol):
         try:
             batch_count, agency = protocol.recv_batch_payload_header()
             bets = protocol.recv_batch_payload(batch_count, agency)
             with self._storage_lock:
                 store_bets(bets)
-            logging.info(f"action: apuesta_recibida | result: success | cantidad: {len(bets)}")
+            log_bet_received_success(len(bets))
             protocol.send_ack(True)
-            return True
+            return None
         except (OSError, ValueError, ConnectionError) as e:
-            logging.error(f'action: apuesta_recibida | result: fail | cantidad: {FAIL_BATCH_COUNT} | error: {e}')
-            try:
-                protocol.send_ack(False)
-            except OSError:
-                pass
-            return False
+            return e
 
     def __handle_finish_message(self, protocol):
         try:
@@ -161,28 +174,24 @@ class Server:
             protocol.send_ack(True)
 
             if self._draw_state.mark_agency_finished(agency):
-                logging.info('action: sorteo | result: success')
-            return True
-        except (OSError, ValueError, ConnectionError):
-            try:
-                protocol.send_ack(False)
-            except OSError:
-                pass
-            return False
+                log_draw_success()
+            return None
+        except (OSError, ValueError, ConnectionError) as e:
+            return e
 
     def __handle_winners_query(self, protocol):
         try:
             agency = protocol.recv_agency()
             if not self._draw_state.is_draw_done():
                 protocol.send_pending_response()
-                return True
+                return None
 
             with self._storage_lock:
                 winners = self._winners_service.find_winner_documents_by_agency(agency)
             protocol.send_winners_response(ACK_SUCCESS, winners)
-            return True
-        except (OSError, ValueError, ConnectionError):
-            return False
+            return None
+        except (OSError, ValueError, ConnectionError) as e:
+            return e
 
     def __accept_new_connection(self):
         """
@@ -196,10 +205,10 @@ class Server:
         if not self._running:
             return None
 
-        logging.info('action: accept_connections | result: in_progress')
+        log_accept_connections_in_progress()
         try:
             c, addr = self._server_socket.accept()
-            logging.info(f'action: accept_connections | result: success | ip: {addr[0]}')
+            log_accept_connections_success(addr[0])
             return c
         except OSError:
             return None

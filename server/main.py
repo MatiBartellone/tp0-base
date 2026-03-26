@@ -2,6 +2,7 @@
 
 from configparser import ConfigParser
 from common.server import Server
+from common.server_logs import log_server_config_success
 import logging
 import os
 
@@ -46,9 +47,7 @@ def main():
 
     # Log config parameters at the beginning of the program to verify the configuration
     # of the component
-    logging.debug(f"action: config | result: success | port: {port} | "
-                  f"listen_backlog: {listen_backlog} | logging_level: {logging_level} | "
-                  f"expected_agencies: {expected_agencies}")
+    log_server_config_success(port, listen_backlog, logging_level, expected_agencies)
 
     # Initialize server and start server loop
     server = Server(port, listen_backlog, expected_agencies)
