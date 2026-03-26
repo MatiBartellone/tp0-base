@@ -1,6 +1,7 @@
 package common
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"os/signal"
@@ -52,11 +53,6 @@ func (c *Client) closeConn() {
 func (c *Client) createClientSocket() error {
 	conn, err := net.Dial("tcp", c.config.ServerAddress)
 	if err != nil {
-		log.Criticalf(
-			"action: connect | result: fail | client_id: %v | error: %v",
-			c.config.ID,
-			err,
-		)
 		return err
 	}
 	c.protocol = NewClientProtocol(conn)
@@ -83,38 +79,52 @@ func (c *Client) isShuttingDown() bool {
 	}
 }
 
-func (c *Client) handleSendResult(ok bool, ackErr error) bool {
+func (c *Client) handleSendResult(ok bool, ackErr error) error {
 	if ackErr != nil {
 		if c.isShuttingDown() {
-			return false
+			return nil
 		}
-		logAckReadFailure(c.config.ID, ackErr)
-		return false
+		return fmt.Errorf("ack read failure: %w", ackErr)
 	}
 
 	if !ok {
-		logAckRejected(c.config.ID, ok)
-		return false
+		return fmt.Errorf("ack rejected by server")
 	}
-	return true
+	return nil
 }
 
 // StartClientLoop Send messages to the client until some time threshold is met
 func (c *Client) StartClientLoop() {
+	var loopErr error
+	defer func() {
+		if c.isShuttingDown() {
+			return
+		}
+
+		if loopErr != nil {
+			logClientLoopFailure(c.config.ID, loopErr)
+			return
+		}
+
+		log.Infof("action: loop_finished | result: success | client_id: %v", c.config.ID)
+	}()
+
 	c.registerSignalHandler()
 
 	if err := c.createClientSocket(); err != nil {
+		loopErr = fmt.Errorf("connect failure: %w", err)
 		return
 	}
 	defer c.closeConn()
 
 	agencyID, err := c.parseAgencyID()
 	if err != nil {
-		logBetSendFailure(c.config.ID, err)
+		loopErr = fmt.Errorf("agency parse failure: %w", err)
 		return
 	}
 
-	if !c.sendDatasetBatches(agencyID) {
+	if err := c.sendDatasetBatches(agencyID); err != nil {
+		loopErr = err
 		return
 	}
 
@@ -122,14 +132,14 @@ func (c *Client) StartClientLoop() {
 		return
 	}
 
-	if !c.sendFinish(agencyID) {
+	if err := c.sendFinish(agencyID); err != nil {
+		loopErr = err
 		return
 	}
 
 	c.closeConn()
-	if !c.waitWinnersResult(agencyID) {
+	if err := c.waitWinnersResult(agencyID); err != nil {
+		loopErr = err
 		return
 	}
-
-	log.Infof("action: loop_finished | result: success | client_id: %v", c.config.ID)
 }

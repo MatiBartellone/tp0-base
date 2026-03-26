@@ -18,41 +18,37 @@ func (c *Client) parseAgencyID() (uint8, error) {
 	return uint8(agencyID), nil
 }
 
-func (c *Client) sendBatch(batchPayload []byte) (bool, error, error) {
+func (c *Client) sendBatch(batchPayload []byte) error {
 	if err := c.protocol.SendBatch(batchPayload); err != nil {
-		return false, err, nil
+		return fmt.Errorf("send batch failure: %w", err)
 	}
 
 	ok, ackErr := c.protocol.ReadBatchAck()
-	return ok, nil, ackErr
+	if err := c.handleSendResult(ok, ackErr); err != nil {
+		return err
+	}
+
+	return nil
 }
 
-func (c *Client) sendBuiltBatch(builder *BatchBuilder) bool {
+func (c *Client) sendBuiltBatch(builder *BatchBuilder) error {
 	payload, _, err := builder.Build()
 	if err != nil {
-		logBetSendFailure(c.config.ID, err)
-		return false
+		return fmt.Errorf("build batch failure: %w", err)
 	}
 
-	ok, sendErr, ackErr := c.sendBatch(payload)
-	if sendErr != nil {
-		logBetSendFailure(c.config.ID, sendErr)
-		return false
-	}
-
-	if !c.handleSendResult(ok, ackErr) {
-		return false
+	if err := c.sendBatch(payload); err != nil {
+		return err
 	}
 
 	builder.Reset()
-	return true
+	return nil
 }
 
-func (c *Client) sendDatasetBatches(agencyID uint8) bool {
+func (c *Client) sendDatasetBatches(agencyID uint8) error {
 	file, err := openAgencyDataset(c.config.ID)
 	if err != nil {
-		logBetSendFailure(c.config.ID, err)
-		return false
+		return fmt.Errorf("open dataset failure: %w", err)
 	}
 	defer file.Close()
 
@@ -61,38 +57,37 @@ func (c *Client) sendDatasetBatches(agencyID uint8) bool {
 
 	for {
 		if c.isShuttingDown() {
-			return false
+			return nil
 		}
 
 		record, readErr := reader.Read()
 		if readErr == io.EOF {
-			if !builder.IsEmpty() && !c.sendBuiltBatch(builder) {
-				return false
+			if !builder.IsEmpty() {
+				if err := c.sendBuiltBatch(builder); err != nil {
+					return err
+				}
 			}
-			return true
+			return nil
 		}
 		if readErr != nil {
-			logBetSendFailure(c.config.ID, readErr)
-			return false
+			return fmt.Errorf("read dataset failure: %w", readErr)
 		}
 
 		bet, betErr := NewBetFromRecord(record)
 		if betErr != nil {
-			logBetSendFailure(c.config.ID, betErr)
-			return false
+			return fmt.Errorf("record decode failure: %w", betErr)
 		}
 
 		if builder.Add(bet) {
 			continue
 		}
 
-		if !c.sendBuiltBatch(builder) {
-			return false
+		if err := c.sendBuiltBatch(builder); err != nil {
+			return err
 		}
 
 		if !builder.Add(bet) {
-			logBetSendFailure(c.config.ID, io.ErrShortBuffer)
-			return false
+			return fmt.Errorf("batch append failure: %w", io.ErrShortBuffer)
 		}
 	}
 }
