@@ -1,11 +1,10 @@
 package common
 
 import (
-	"io"
+	"fmt"
 	"net"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 
 	"github.com/op/go-logging"
@@ -39,7 +38,7 @@ func (c *Client) Stop() {
 	default:
 		close(c.shutdownChan)
 		c.closeConn()
-		log.Infof("action: shutdown | result: success | client_id: %v", c.config.ID)
+		logClientShutdownSuccess(c.config.ID)
 	}
 }
 
@@ -71,7 +70,7 @@ func (c *Client) registerSignalHandler() {
 
 	go func() {
 		<-sigChan
-		log.Infof("action: shutdown | result: in_progress | client_id: %v", c.config.ID)
+		logClientShutdownInProgress(c.config.ID)
 		c.Stop()
 	}()
 }
@@ -85,116 +84,52 @@ func (c *Client) isShuttingDown() bool {
 	}
 }
 
-func (c *Client) handleSendResult(ok bool, ackErr error) bool {
+func (c *Client) handleSendResult(ok bool, ackErr error) error {
 	if ackErr != nil {
 		if c.isShuttingDown() {
-			return false
+			return nil
 		}
-		logAckReadFailure(c.config.ID, ackErr)
-		return false
+		return fmt.Errorf("ack read failure: %w", ackErr)
 	}
 
 	if !ok {
-		logAckRejected(c.config.ID, ok)
-		return false
+		return fmt.Errorf("ack rejected by server")
 	}
-	return true
-}
-
-func (c *Client) sendBatch(batchPayload []byte) (bool, error, error) {
-	if err := c.protocol.SendBatch(batchPayload); err != nil {
-		return false, err, nil
-	}
-
-	ok, ackErr := c.protocol.ReadBatchAck()
-	return ok, nil, ackErr
-}
-
-func (c *Client) sendBuiltBatch(builder *BatchBuilder) bool {
-	payload, _, err := builder.Build()
-	if err != nil {
-		logBetSendFailure(c.config.ID, err)
-		return false
-	}
-
-	ok, sendErr, ackErr := c.sendBatch(payload)
-	if sendErr != nil {
-		logBetSendFailure(c.config.ID, sendErr)
-		return false
-	}
-
-	if !c.handleSendResult(ok, ackErr) {
-		return false
-	}
-
-	builder.Reset()
-	return true
+	return nil
 }
 
 // StartClientLoop Send messages to the client until some time threshold is met
 func (c *Client) StartClientLoop() {
-	c.registerSignalHandler()
-
-	if err := c.createClientSocket(); err != nil {
-		return
-	}
-	defer c.closeConn()
-
-	agencyID, err := strconv.Atoi(c.config.ID)
-	if err != nil {
-		logBetSendFailure(c.config.ID, err)
-		return
-	}
-
-	file, err := openAgencyDataset(c.config.ID)
-	if err != nil {
-		logBetSendFailure(c.config.ID, err)
-		return
-	}
-	defer file.Close()
-
-	reader := newDatasetReader(file)
-	builder := NewBatchBuilder(uint8(agencyID), c.config.BatchMaxAmount)
-
-	for {
+	var loopErr error
+	defer func() {
 		if c.isShuttingDown() {
 			return
 		}
 
-		record, readErr := reader.Read()
-		if readErr == io.EOF {
-			if !builder.IsEmpty() && !c.sendBuiltBatch(builder) {
-				return
-			}
-			break
-		}
-		if readErr != nil {
-			logBetSendFailure(c.config.ID, readErr)
+		if loopErr != nil {
+			logClientLoopFailure(c.config.ID, loopErr)
 			return
 		}
 
-		bet, betErr := NewBetFromRecord(record)
-		if betErr != nil {
-			logBetSendFailure(c.config.ID, betErr)
-			return
-		}
+		logClientLoopSuccess(c.config.ID)
+	}()
 
-		if builder.Add(bet) {
-			continue
-		}
+	c.registerSignalHandler()
 
-		if !c.sendBuiltBatch(builder) {
-			return
-		}
-
-		if !builder.Add(bet) {
-			logBetSendFailure(c.config.ID, io.ErrShortBuffer)
-			return
-		}
-	}
-
-	if c.isShuttingDown() {
+	if err := c.createClientSocket(); err != nil {
+		loopErr = fmt.Errorf("connect failure: %w", err)
 		return
 	}
-	log.Infof("action: loop_finished | result: success | client_id: %v", c.config.ID)
+	defer c.closeConn()
+
+	agencyID, err := c.parseAgencyID()
+	if err != nil {
+		loopErr = fmt.Errorf("agency parse failure: %w", err)
+		return
+	}
+
+	if err := c.sendDatasetBatches(agencyID); err != nil {
+		loopErr = err
+		return
+	}
 }
