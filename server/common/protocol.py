@@ -23,10 +23,6 @@ U32_FMT = ">I"
 
 STRING_ENCODING = "utf-8"
 
-BIRTH_YEAR_MIN = 1
-BIRTH_MONTH_MIN = 1
-BIRTH_DAY_MIN = 1
-
 
 class ServerProtocol:
     def __init__(self, peer):
@@ -34,21 +30,6 @@ class ServerProtocol:
 
     def recv_message_type(self):
         return self._recv_u8()
-
-    def recv_batch(self):
-        batch_count, agency = self.recv_batch_header()
-
-        bets = []
-        for _ in range(batch_count):
-            bets.append(self._recv_bet(agency))
-        return bets
-
-    def recv_batch_header(self):
-        msg_type = self.recv_message_type()
-        if msg_type != TYPE_BATCH:
-            raise ValueError(f"unexpected message type: {msg_type}")
-
-        return self.recv_batch_payload_header()
 
     def recv_batch_payload_header(self):
         batch_count = self._recv_u8()

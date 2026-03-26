@@ -8,28 +8,18 @@ import (
 )
 
 const (
-	ackByteSize    = 1
-	ackSuccessCode = 1
-	ackIndex       = 0
-
-	typeBatchMessage        = 1
-	typeFinishMessage       = 2
-	typeWinnersQueryMessage = 3
-
 	queryStatusFailure = 0
 	queryStatusSuccess = 1
 	queryStatusPending = 2
-
-	winnersCountByteSize = 2
-	dniByteSize          = 4
 )
 
 type ClientProtocol struct {
-	conn net.Conn
+	conn    net.Conn
+	builder *ProtocolBuilder
 }
 
 func NewClientProtocol(conn net.Conn) *ClientProtocol {
-	return &ClientProtocol{conn: conn}
+	return &ClientProtocol{conn: conn, builder: NewProtocolBuilder()}
 }
 
 func (p *ClientProtocol) Send(payload []byte) error {
@@ -49,21 +39,21 @@ func (p *ClientProtocol) SendBatch(payload []byte) error {
 }
 
 func (p *ClientProtocol) SendFinish(agencyID uint8) error {
-	payload := []byte{typeFinishMessage, agencyID}
+	payload := p.builder.BuildFinishMessage(agencyID)
 	return p.Send(payload)
 }
 
 func (p *ClientProtocol) SendWinnersQuery(agencyID uint8) error {
-	payload := []byte{typeWinnersQueryMessage, agencyID}
+	payload := p.builder.BuildWinnersQueryMessage(agencyID)
 	return p.Send(payload)
 }
 
 func (p *ClientProtocol) ReadAck() (bool, error) {
-	ack := make([]byte, ackByteSize)
-	if _, err := io.ReadFull(p.conn, ack); err != nil {
+	ack, err := p.readU8()
+	if err != nil {
 		return false, err
 	}
-	return ack[ackIndex] == ackSuccessCode, nil
+	return ack == protocolAckSuccessCode, nil
 }
 
 func (p *ClientProtocol) ReadBatchAck() (bool, error) {
@@ -75,35 +65,58 @@ func (p *ClientProtocol) ReadFinishAck() (bool, error) {
 }
 
 func (p *ClientProtocol) ReadWinnersResponse() (uint8, []uint32, error) {
-	status := make([]byte, ackByteSize)
-	if _, err := io.ReadFull(p.conn, status); err != nil {
+	status, err := p.readU8()
+	if err != nil {
 		return queryStatusFailure, nil, err
 	}
 
-	countRaw := make([]byte, winnersCountByteSize)
-	if _, err := io.ReadFull(p.conn, countRaw); err != nil {
+	count, err := p.readU16()
+	if err != nil {
 		return queryStatusFailure, nil, err
 	}
 
-	count := int(binary.BigEndian.Uint16(countRaw))
 	if count == 0 {
-		return status[ackIndex], nil, nil
+		return status, nil, nil
 	}
 
 	winners := make([]uint32, count)
-	buf := make([]byte, dniByteSize)
-	for i := 0; i < count; i++ {
-		if _, err := io.ReadFull(p.conn, buf); err != nil {
+	for i := range winners {
+		winner, err := p.readU32()
+		if err != nil {
 			return queryStatusFailure, nil, err
 		}
-		winners[i] = binary.BigEndian.Uint32(buf)
+		winners[i] = winner
 	}
 
-	if status[ackIndex] == queryStatusSuccess || status[ackIndex] == queryStatusPending {
-		return status[ackIndex], winners, nil
+	if status == queryStatusSuccess || status == queryStatusPending {
+		return status, winners, nil
 	}
 
-	return status[ackIndex], winners, fmt.Errorf("unexpected winners response status: %d", status[ackIndex])
+	return status, winners, fmt.Errorf("unexpected winners response status: %d", status)
+}
+
+func (p *ClientProtocol) readU8() (uint8, error) {
+	buf := make([]byte, protocolAckByteSize)
+	if _, err := io.ReadFull(p.conn, buf); err != nil {
+		return 0, err
+	}
+	return buf[protocolAckIndex], nil
+}
+
+func (p *ClientProtocol) readU16() (int, error) {
+	buf := make([]byte, protocolWinnersCountByteSize)
+	if _, err := io.ReadFull(p.conn, buf); err != nil {
+		return 0, err
+	}
+	return int(binary.BigEndian.Uint16(buf)), nil
+}
+
+func (p *ClientProtocol) readU32() (uint32, error) {
+	buf := make([]byte, protocolDNIByteSize)
+	if _, err := io.ReadFull(p.conn, buf); err != nil {
+		return 0, err
+	}
+	return binary.BigEndian.Uint32(buf), nil
 }
 
 func (p *ClientProtocol) Close() {

@@ -8,18 +8,17 @@ import (
 
 const winnersQueryRetryPeriod = 150 * time.Millisecond
 
-func (c *Client) sendFinish(agencyID uint8) bool {
+func (c *Client) sendFinish(agencyID uint8) error {
 	if err := c.protocol.SendFinish(agencyID); err != nil {
-		logBetSendFailure(c.config.ID, err)
-		return false
+		return fmt.Errorf("send finish failure: %w", err)
 	}
 
 	ok, ackErr := c.protocol.ReadFinishAck()
-	if !c.handleSendResult(ok, ackErr) {
-		return false
+	if err := c.handleSendResult(ok, ackErr); err != nil {
+		return err
 	}
 
-	return true
+	return nil
 }
 
 func (c *Client) requestWinners(agencyID uint8) (uint8, int, error) {
@@ -42,16 +41,15 @@ func (c *Client) requestWinners(agencyID uint8) (uint8, int, error) {
 	return status, len(winners), nil
 }
 
-func (c *Client) waitWinnersResult(agencyID uint8) bool {
+func (c *Client) waitWinnersResult(agencyID uint8) error {
 	for {
 		if c.isShuttingDown() {
-			return false
+			return nil
 		}
 
 		status, winnersCount, err := c.requestWinners(agencyID)
 		if err != nil {
-			logBetSendFailure(c.config.ID, err)
-			return false
+			return fmt.Errorf("winners query failure: %w", err)
 		}
 
 		if status == queryStatusPending {
@@ -60,11 +58,10 @@ func (c *Client) waitWinnersResult(agencyID uint8) bool {
 		}
 
 		if status != queryStatusSuccess {
-			logBetSendFailure(c.config.ID, fmt.Errorf("unexpected winners status: %d", status))
-			return false
+			return fmt.Errorf("unexpected winners status: %d", status)
 		}
 
-		log.Infof("action: consulta_ganadores | result: success | cant_ganadores: %v", winnersCount)
-		return true
+		logWinnersQuerySuccess(winnersCount)
+		return nil
 	}
 }
