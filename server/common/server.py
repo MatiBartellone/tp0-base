@@ -1,6 +1,7 @@
 import socket
 import logging
 import signal
+import threading
 
 from .utils import store_bets
 from .draw_state import DrawState
@@ -14,6 +15,7 @@ from .protocol import (
 )
 
 FAIL_BATCH_COUNT = 0
+CLIENT_THREAD_JOIN_TIMEOUT_SECONDS = 1
 
 
 class Server:
@@ -25,6 +27,9 @@ class Server:
         self._running = True
         self._draw_state = DrawState(expected_agencies)
         self._winners_service = WinnersService()
+        self._storage_lock = threading.Lock()
+        self._threads_lock = threading.Lock()
+        self._client_threads = set()
         self.__register_signals()
 
     def __register_signals(self):
@@ -43,6 +48,8 @@ class Server:
         except OSError as e:
             logging.error(f'action: shutdown | result: fail | resource: server_socket | error: {e}')
 
+        self.__join_client_threads()
+
     def run(self):
         """
         Dummy Server loop
@@ -55,7 +62,32 @@ class Server:
             client_sock = self.__accept_new_connection()
             if client_sock is None:
                 continue
+
+            thread = threading.Thread(target=self.__run_client_connection, args=(client_sock,), daemon=True)
+            self.__register_client_thread(thread)
+            thread.start()
+
+    def __run_client_connection(self, client_sock):
+        try:
             self.__handle_client_connection(client_sock)
+        finally:
+            self.__unregister_current_thread()
+
+    def __register_client_thread(self, thread):
+        with self._threads_lock:
+            self._client_threads.add(thread)
+
+    def __unregister_current_thread(self):
+        current_thread = threading.current_thread()
+        with self._threads_lock:
+            self._client_threads.discard(current_thread)
+
+    def __join_client_threads(self):
+        with self._threads_lock:
+            threads_to_join = list(self._client_threads)
+
+        for thread in threads_to_join:
+            thread.join(CLIENT_THREAD_JOIN_TIMEOUT_SECONDS)
 
     def __handle_client_connection(self, client_sock):
         """
@@ -110,7 +142,8 @@ class Server:
         try:
             batch_count, agency = protocol.recv_batch_payload_header()
             bets = protocol.recv_batch_payload(batch_count, agency)
-            store_bets(bets)
+            with self._storage_lock:
+                store_bets(bets)
             logging.info(f"action: apuesta_recibida | result: success | cantidad: {len(bets)}")
             protocol.send_ack(True)
             return True
@@ -144,7 +177,8 @@ class Server:
                 protocol.send_pending_response()
                 return True
 
-            winners = self._winners_service.find_winner_documents_by_agency(agency)
+            with self._storage_lock:
+                winners = self._winners_service.find_winner_documents_by_agency(agency)
             protocol.send_winners_response(ACK_SUCCESS, winners)
             return True
         except (OSError, ValueError, ConnectionError):
