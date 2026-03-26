@@ -11,7 +11,7 @@ func (c *Client) parseAgencyID() (uint8, error) {
 	if err != nil {
 		return 0, err
 	}
-	if agencyID < 0 || agencyID > maxU8Value {
+	if agencyID < 0 || agencyID > protocolMaxU8Value {
 		return 0, fmt.Errorf("invalid agency id: %d", agencyID)
 	}
 
