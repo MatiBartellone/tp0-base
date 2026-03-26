@@ -2,6 +2,19 @@
 
 Este documento describe como ejecutar manualmente cada ejercicio, considerando que el flujo cambia entre ramas.
 
+## Resumen Rapido
+
+| Ejercicio | Flujo principal |
+|---|---|
+| 1 | Generar compose con `./generar-compose.sh` |
+| 2 | Levantar compose y validar config por volumen sin rebuild |
+| 3 | Levantar compose y ejecutar `./validar-echo-server.sh` |
+| 4 | Levantar y bajar compose verificando shutdown graceful |
+| 5 | Configurar apuesta, levantar compose y verificar logs de envio/persistencia |
+| 6 | Preparar dataset, levantar compose y verificar recepcion por batches |
+| 7 | Preparar datasets multiagencia, levantar compose y verificar sorteo + consulta de ganadores |
+| 8 | Ejecutar flujo de ej7 con concurrencia en servidor |
+
 ## Requisitos
 
 1. Docker y Docker Compose instalados.

@@ -17,6 +17,11 @@ services:
     entrypoint: /client
     environment:
       - CLI_ID=1
+      - NOMBRE=Nombre1
+      - APELLIDO=Apellido1
+      - DOCUMENTO=30000001
+      - NACIMIENTO=1999-03-17
+      - NUMERO=7574
     volumes:
       - ./client/config.yaml:/config.yaml
       - ./.data:/.data
