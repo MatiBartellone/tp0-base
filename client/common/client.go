@@ -1,11 +1,9 @@
 package common
 
 import (
-	"io"
 	"net"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 
 	"github.com/op/go-logging"
@@ -101,36 +99,6 @@ func (c *Client) handleSendResult(ok bool, ackErr error) bool {
 	return true
 }
 
-func (c *Client) sendBatch(batchPayload []byte) (bool, error, error) {
-	if err := c.protocol.SendBatch(batchPayload); err != nil {
-		return false, err, nil
-	}
-
-	ok, ackErr := c.protocol.ReadBatchAck()
-	return ok, nil, ackErr
-}
-
-func (c *Client) sendBuiltBatch(builder *BatchBuilder) bool {
-	payload, _, err := builder.Build()
-	if err != nil {
-		logBetSendFailure(c.config.ID, err)
-		return false
-	}
-
-	ok, sendErr, ackErr := c.sendBatch(payload)
-	if sendErr != nil {
-		logBetSendFailure(c.config.ID, sendErr)
-		return false
-	}
-
-	if !c.handleSendResult(ok, ackErr) {
-		return false
-	}
-
-	builder.Reset()
-	return true
-}
-
 // StartClientLoop Send messages to the client until some time threshold is met
 func (c *Client) StartClientLoop() {
 	c.registerSignalHandler()
@@ -140,61 +108,28 @@ func (c *Client) StartClientLoop() {
 	}
 	defer c.closeConn()
 
-	agencyID, err := strconv.Atoi(c.config.ID)
+	agencyID, err := c.parseAgencyID()
 	if err != nil {
 		logBetSendFailure(c.config.ID, err)
 		return
 	}
 
-	file, err := openAgencyDataset(c.config.ID)
-	if err != nil {
-		logBetSendFailure(c.config.ID, err)
+	if !c.sendDatasetBatches(agencyID) {
 		return
-	}
-	defer file.Close()
-
-	reader := newDatasetReader(file)
-	builder := NewBatchBuilder(uint8(agencyID), c.config.BatchMaxAmount)
-
-	for {
-		if c.isShuttingDown() {
-			return
-		}
-
-		record, readErr := reader.Read()
-		if readErr == io.EOF {
-			if !builder.IsEmpty() && !c.sendBuiltBatch(builder) {
-				return
-			}
-			break
-		}
-		if readErr != nil {
-			logBetSendFailure(c.config.ID, readErr)
-			return
-		}
-
-		bet, betErr := NewBetFromRecord(record)
-		if betErr != nil {
-			logBetSendFailure(c.config.ID, betErr)
-			return
-		}
-
-		if builder.Add(bet) {
-			continue
-		}
-
-		if !c.sendBuiltBatch(builder) {
-			return
-		}
-
-		if !builder.Add(bet) {
-			logBetSendFailure(c.config.ID, io.ErrShortBuffer)
-			return
-		}
 	}
 
 	if c.isShuttingDown() {
 		return
 	}
+
+	if !c.sendFinish(agencyID) {
+		return
+	}
+
+	c.closeConn()
+	if !c.waitWinnersResult(agencyID) {
+		return
+	}
+
 	log.Infof("action: loop_finished | result: success | client_id: %v", c.config.ID)
 }

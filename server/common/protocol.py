@@ -4,9 +4,13 @@ import datetime
 from .utils import Bet
 
 TYPE_BATCH = 1
+TYPE_FINISH = 2
+TYPE_WINNERS_QUERY = 3
 
 ACK_SUCCESS = 1
 ACK_FAILURE = 0
+
+QUERY_PENDING = 2
 
 U8_BYTE_SIZE = 1
 U16_BYTE_SIZE = 2
@@ -28,18 +32,48 @@ class ServerProtocol:
     def __init__(self, peer):
         self._peer = peer
 
-    def recv_batch(self):
-        msg_type = self._recv_u8()
-        if msg_type != TYPE_BATCH:
-            raise ValueError(f"unexpected message type: {msg_type}")
+    def recv_message_type(self):
+        return self._recv_u8()
 
-        batch_count = self._recv_u8()
-        agency = str(self._recv_u8())
+    def recv_batch(self):
+        batch_count, agency = self.recv_batch_header()
 
         bets = []
         for _ in range(batch_count):
             bets.append(self._recv_bet(agency))
         return bets
+
+    def recv_batch_header(self):
+        msg_type = self.recv_message_type()
+        if msg_type != TYPE_BATCH:
+            raise ValueError(f"unexpected message type: {msg_type}")
+
+        return self.recv_batch_payload_header()
+
+    def recv_batch_payload_header(self):
+        batch_count = self._recv_u8()
+        agency = str(self._recv_u8())
+        return batch_count, agency
+
+    def recv_batch_payload(self, batch_count, agency):
+        bets = []
+        for _ in range(batch_count):
+            bets.append(self._recv_bet(agency))
+        return bets
+
+    def recv_agency(self):
+        return str(self._recv_u8())
+
+    def send_winners_response(self, status, winners):
+        payload = bytearray()
+        payload.append(status)
+        payload.extend(struct.pack(U16_FMT, len(winners)))
+        for winner in winners:
+            payload.extend(struct.pack(U32_FMT, winner))
+        self._peer.sendall(bytes(payload))
+
+    def send_pending_response(self):
+        self.send_winners_response(QUERY_PENDING, [])
 
     def _recv_bet(self, agency):
         first_name = self._recv_string()

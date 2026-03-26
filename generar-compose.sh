@@ -24,6 +24,7 @@ services:
     entrypoint: python3 /main.py
     environment:
       - PYTHONUNBUFFERED=1
+      - SERVER_EXPECTED_AGENCIES=$CLIENT_COUNT
     volumes:
       - ./server/config.ini:/config.ini
     networks:
@@ -39,11 +40,6 @@ for ((i=1; i<=CLIENT_COUNT; i++)); do
     entrypoint: /client
     environment:
       - CLI_ID=$i
-      - NOMBRE=${NOMBRE:-Nombre$i}
-      - APELLIDO=${APELLIDO:-Apellido$i}
-      - DOCUMENTO=${DOCUMENTO:-3000000$i}
-      - NACIMIENTO=${NACIMIENTO:-1999-03-17}
-      - NUMERO=${NUMERO:-7574}
     volumes:
       - ./client/config.yaml:/config.yaml
       - ./.data:/.data
